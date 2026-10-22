@@ -1,0 +1,69 @@
+---
+title: "ExploratoryGenius"
+format: pdf
+editor: visual
+---
+
+```{r}
+# Load in jsonlite package
+library(jsonlite)
+library(dplyr)
+#Assign Node Data and get a snapshot
+datausers_nominal <- stream_in(file("/Users/alexgould/Downloads/genius-expertise/user_info.json"))
+head(datausers)
+data_annotate <- stream_in(file(("/Users/alexgould/Downloads/genius-expertise/annotation_info.json")))
+head(data_annotate)
+songinfo <-  stream_in(file(("/Users/alexgould/Downloads/genius-expertise/song_info.json")))
+head(songinfo)
+
+
+# Assign Edge Data
+edges_nominal <- read.csv("genius-expertise/follows.csv")
+dim(edges)
+length(unique(edges$follower))
+length(unique(edges$following))
+
+
+
+#Make Dataset with only users in node dataset and who are also contained 
+# in folower and following
+
+valid_users <- intersect(
+  unique(data_annotate$user[!is.na(data_annotate$user)]),
+  intersect(
+    intersect(unique(datausers_nominal$url_name),
+              unique(edges_nominal$follower)),
+    unique(edges_nominal$following)
+  )
+)
+edges_reduced <- data.frame()
+edges_reduced <- edges_nominal[edges_nominal$follower %in% valid_users &
+                                 edges_nominal$following %in% valid_users,
+                               c("follower", "following")]
+stopifnot(all(unlist(edges_reduced) %in% nodes_reduced$url_name))
+dim(edges_reduced)
+
+valid_nodes <- datausers_nominal[datausers_nominal$url_name %in% valid_users, ]
+
+valid_annotate <- data_annotate[data_annotate$user %in% valid_users, ]
+
+
+nodes_reduced <- merge(valid_nodes, valid_annotate, by.x = "url_name",
+                       by.y = "user", all.x = TRUE)
+dim(nodes_reduced)
+
+#Infeasible to cast to wide because of the amount of songs per user
+nodes_r <- nodes_reduced %>% 
+            group_by(url_name) %>%
+            slice_max(votes, n=1, with_ties = F)%>%
+  ungroup()
+#Clear empty columns
+nodes_r <- as.data.frame(nodes_r[,setdiff(names(nodes_r), c("acceptor", "artist"))])
+#Change classes of vectors 
+nodes_r <- cbind(nodes_r[, names(nodes_r) != "stats"], nodes_r$stats)
+nodes_r$roles <- unlist(nodes_r$roles)
+
+g <- graph_from_data_frame(d= edges_reduced, directed = T, vertices = nodes_r)
+
+
+```
