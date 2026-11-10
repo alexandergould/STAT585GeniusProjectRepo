@@ -15,7 +15,7 @@ This project seeks to determine whether Genius users who annotate similiar music
 
 1. Does the similarity between genre and profile impact the formation of the network?
 2. Do these conclusions hold up against sampling with different network designs?
-3. oes the genre of music a user interacts with drive specific connections? 
+3. Does the genre of music a user interacts with drive specific connections? 
 4. Do results change based on the sampling algorithm we choose? 
 
 ## Data and Network
