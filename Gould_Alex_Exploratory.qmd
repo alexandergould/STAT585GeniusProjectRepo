@@ -128,3 +128,35 @@ plot(g)
 
 
 ```
+
+Descriptive Analysis
+```{r, echo=TRUE}
+# A. Node Degree Distribution
+hist(degree(g))
+mean(degree(g))
+sd(degree(g))
+# B. Global and Local Density
+#Global
+edge_density(g)
+#Local 
+
+
+#C. Clustering Coefficient
+hist(transitivity(g, type = "local"))
+transitivity(g, type = "global")
+mean(na.omit(transitivity(g, type = "local")))
+sd(na.omit(transitivity(g, type = "local")))
+
+# D: Average Betweenness
+mean(betweenness(g))
+
+#E : Degree/Nominal Assortativity 
+#Degree Assortativity
+assortativity_degree(g)
+#Nominal Assortativity 
+
+
+#F: Graph Partinitioning 
+#cluster_fast_greedy(g)
+#Only works on undirected graphs 
+```
