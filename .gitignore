@@ -1,4 +1,7 @@
-genius-expertise/
+# raw data (too large for GitHub)
+genius-expertise/*.json
+genius-expertise/*.jl
+genius-expertise/follows.csv
+genius-expertise/map_artist_names.csv
 initialfiles.Rdata
-initialfiles.Rdata
-DS_Store
+.DS_Store
