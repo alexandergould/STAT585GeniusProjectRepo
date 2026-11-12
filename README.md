@@ -1,6 +1,6 @@
 ---
 title: "README"
-author: "Callum Magarian"
+author: "Callum Magarian, Alex Gould"
 date: "2026-10-25"
 output: html_document
 ---
