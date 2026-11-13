@@ -44,7 +44,7 @@ edges_reduced <- data.frame()
 edges_reduced <- edges_nominal[edges_nominal$follower %in% valid_users &
                                  edges_nominal$following %in% valid_users,
                                c("follower", "following")]
-#stopifnot(all(unlist(edges_reduced) %in% nodes_reduced$url_name))
+stopifnot(all(unlist(edges_reduced) %in% nodes_reduced$url_name))
 dim(edges_reduced)
 
 #Make sure we intersect the annotation dataset and nodes dataset because annotate dataset has song info 
@@ -100,7 +100,7 @@ head(nodes_reduced$edits_lst)
 unlist(nodes_reduced$edits_list)
 
 #All edits_lst values are null in this subset, delete from dataframe
-nodes_reduced <- subset(nodes_reduced, select = -edits_lst)
+#nodes_reduced <- subset(nodes_reduced, select = -edits_lst)
 
 #Subset the songinfo dataset by unlisting the tags (genre) and set the most common genre as the observation
 top_tag <- function(x) {
@@ -123,16 +123,25 @@ colnames(nodes_reduced)
 dim(nodes_reduced)
 
 #Create preliminary graph 
-g <- graph_from_data_frame(vertices = nodes_reduced, d= edges_reduced, directed = TRUE)
-plot(g)
-
-
+g <- graph_from_data_frame(vertices = nodes_reduced, d= edges_reduced,
+                           directed = TRUE)
+plot(g, vertex.label= NA, layout = layout_with_fr(g), vertex.size = 0.5, edge.arrow.size = 0.1)
+#Not super informative
+```
+G(n,p) graph visualization 
+```{r, echo=TRUE}
+# Small standalone graph (no copy of the big one)
+sampled_nodes <- sample(V(g), 0.1*vcount(g))
+induced <- induced_subgraph(g,sampled_nodes)
+E(induced)$color <- "blue"
+plot(induced, vertex.label = NA, layout = layout_with_fr(induced), 
+     vertex.size = 0.7, edge.arrow.size = 0.5)
 ```
 
 Descriptive Analysis
 ```{r, echo=TRUE}
 # A. Node Degree Distribution
-hist(degree(g, mode ="out"))
+hist(degree(g))
 mean(degree(g))
 sd(degree(g))
 # B. Global and Local Density
