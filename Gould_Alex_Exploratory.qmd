@@ -19,18 +19,13 @@ library(igraph)
 #head(songinfo)
 # save(datausers_nominal, data_annotate, songinfo, file = "/Users/alexgould/Desktop/STA585GeniusProject/initialfiles.Rdata" )
 
+library(igraph)
+
 # Load in Node data
 load("/Users/alexgould/Desktop/STA585GeniusProject/initialfiles.Rdata")
 
 # Assign Edge Data
 edges_nominal <- read.csv("/Users/alexgould/Desktop/STA585GeniusProject/genius-expertise/follows.csv")
-length(unique(edges_nominal$follower))
-length(unique(edges_nominal$following))
-
-
-
-#Make Dataset with only users in node dataset and who are also contained 
-# in folower and following
 
 valid_users <- intersect(
   unique(data_annotate$user[!is.na(data_annotate$user)]),
@@ -40,110 +35,136 @@ valid_users <- intersect(
     unique(edges_nominal$following)
   )
 )
-edges_reduced <- data.frame()
+
 edges_reduced <- edges_nominal[edges_nominal$follower %in% valid_users &
                                  edges_nominal$following %in% valid_users,
                                c("follower", "following")]
-stopifnot(all(unlist(edges_reduced) %in% nodes_reduced$url_name))
-dim(edges_reduced)
 
-#Make sure we intersect the annotation dataset and nodes dataset because annotate dataset has song info 
-valid_nodes <- datausers_nominal[datausers_nominal$url_name %in% valid_users, ]
-
+valid_nodes    <- datausers_nominal[datausers_nominal$url_name %in% valid_users, ]
 valid_annotate <- data_annotate[data_annotate$user %in% valid_users, ]
 
-# Merge nodes and annotate by user name
-nodes_reduced <- merge(valid_nodes, valid_annotate, by.x = "url_name",
-                       by.y = "user", all.x = TRUE)
-dim(nodes_reduced)
+## ---- CHANGED: one genre per user from ALL of their annotations ----
 
-#Delete duplicate rows 
-nodes_reduced <-nodes_reduced[!duplicated(nodes_reduced$url_name),]
-
-#Check class of each variable in the merged dataset
-sapply(nodes_reduced, class)
-
-## Split up with dataframe Stats variable 
-nodes_reduced$annotations <- nodes_reduced$stats$Annotations
-nodes_reduced$suggestions <- nodes_reduced$stats$Suggestions
-nodes_reduced$transcriptions <- nodes_reduced$stats$Transcriptions
-nodes_reduced$questions <- nodes_reduced$stats$Questions
-nodes_reduced$answers <- nodes_reduced$stats$Answers
-nodes_reduced$pyongs <- nodes_reduced$stats$Pyongs
-
-nodes_reduced <- subset(nodes_reduced, select = -stats)
-
-## Deal with list variables
-class(nodes_reduced$roles)
-class(nodes_reduced$contribution_stats)
-class(nodes_reduced$edits_lst)
-
-#Split all roles into Boolean variables
-all_roles <- sort(unique(unlist(nodes_reduced$roles)))
-for (r in all_roles) {
-  col <- paste0("role_", make.names(r))
-  nodes_reduced[[col]] <- vapply(nodes_reduced$roles, function(x) r %in% x, logical(1))
-}
-#Delete original roles
-nodes_reduced <- subset(nodes_reduced, select = -roles)
-
-#Check contribution_stats
-head(nodes_reduced$contribution_stats)
-length(!is.null((nodes_reduced$edits_list)))
-
-#Most contribution stats values are null in this subset, delete from dataframe
-
-nodes_reduced <- subset(nodes_reduced, select = -contribution_stats)
-
-#Check edits_lst
-head(nodes_reduced$edits_lst)
-unlist(nodes_reduced$edits_list)
-
-#All edits_lst values are null in this subset, delete from dataframe
-#nodes_reduced <- subset(nodes_reduced, select = -edits_lst)
-
-#Subset the songinfo dataset by unlisting the tags (genre) and set the most common genre as the observation
+# Song-level tag lookup (first listed tag for each song)
 top_tag <- function(x) {
   x <- unlist(x)
   if (length(x) == 0) NA_character_ else x[1]
 }
 song_tags <- data.frame(
-  key  = tolower(songinfo$url_name),
-  tag  = vapply(songinfo$tags, top_tag, character(1)),
+  key = tolower(songinfo$url_name),
+  tag = vapply(songinfo$tags, top_tag, character(1)),
   stringsAsFactors = FALSE
 )
-song_tags <- song_tags[!duplicated(song_tags$key), ]   # one row per song
+song_tags <- song_tags[!duplicated(song_tags$key), ]
 
-#Merge song_tags to nodes_reduced
-nodes_reduced$tag <-song_tags$tag[match(tolower(nodes_reduced$song), song_tags$key)]
+# Tag every annotation of the valid users
+valid_annotate$tag <- song_tags$tag[match(tolower(valid_annotate$song), song_tags$key)]
+mean(is.na(valid_annotate$tag))        # share of annotations with no genre
 
+# Most frequent tag per user, ties broken at random (reproducible)
+mode_tag <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return(NA_character_)
+  tb  <- table(x)
+  top <- names(tb)[tb == max(tb)]
+  if (length(top) == 1) top else sample(top, 1)
+}
+set.seed(585)
+user_tag <- tapply(valid_annotate$tag, valid_annotate$user, mode_tag)
+user_tags <- data.frame(url_name = names(user_tag),
+                        tag = as.character(user_tag),
+                        stringsAsFactors = FALSE)
 
-#New colnames 
-colnames(nodes_reduced)
-dim(nodes_reduced)
+# One profile row per user, then attach the tag
+nodes_one     <- valid_nodes[!duplicated(valid_nodes$url_name), ]
+nodes_reduced <- merge(nodes_one, user_tags, by = "url_name", all.x = TRUE)
 
-#Create preliminary graph 
-g <- graph_from_data_frame(vertices = nodes_reduced, d= edges_reduced,
-                           directed = TRUE)
-plot(g, vertex.label= NA, layout = layout_with_fr(g), vertex.size = 0.5, edge.arrow.size = 0.1)
-#Not super informative
+stopifnot(!anyDuplicated(nodes_reduced$url_name))
+nrow(nodes_reduced)                    # should equal length(valid_users)
+nrow(nodes_reduced) == length(valid_users) #TRUE
+sum(is.na(nodes_reduced$tag))          # users with no usable genre
+sort(table(nodes_reduced$tag), decreasing = TRUE)[1:10]
+## ---------------------------------------------------------------------
+
+# Drop self-loops and duplicate rows
+edges_final <- edges_reduced[edges_reduced$follower != edges_reduced$following, ]
+edges_final <- unique(edges_final)
+
+# Keep only nodes with at least one remaining edge
+keep_ids    <- unique(c(edges_final$follower, edges_final$following))
+nodes_final <- nodes_reduced[nodes_reduced$url_name %in% keep_ids, ]
+
+stopifnot(all(unlist(edges_final) %in% nodes_final$url_name))
+stopifnot(all(nodes_final$url_name %in% keep_ids))
+stopifnot(!anyDuplicated(nodes_final$url_name))
+
+# Split up stats data frame
+nodes_final$annotations    <- nodes_final$stats$Annotations
+nodes_final$suggestions    <- nodes_final$stats$Suggestions
+nodes_final$transcriptions <- nodes_final$stats$Transcriptions
+nodes_final$questions      <- nodes_final$stats$Questions
+nodes_final$answers        <- nodes_final$stats$Answers
+nodes_final$pyongs         <- nodes_final$stats$Pyongs
+nodes_final <- subset(nodes_final, select = -stats)
+
+# Roles to boolean variables
+all_roles <- sort(unique(unlist(nodes_final$roles)))
+for (r in all_roles) {
+  col <- paste0("role_", make.names(r))
+  nodes_final[[col]] <- vapply(nodes_final$roles, function(x) r %in% x, logical(1))
+}
+nodes_final <- subset(nodes_final, select = -roles)
+
+# Build graph
+g <- graph_from_data_frame(d = edges_final, vertices = nodes_final, directed = TRUE)
+
+plot(g, vertex.label = NA, vertex.size = 0.5, edge.arrow.size = 0.2)
 ```
 G(n,p) graph visualization 
 ```{r, echo=TRUE}
 # Small standalone graph (no copy of the big one)
-sampled_nodes <- sample(V(g), 0.1*vcount(g))
+sampled_nodes <- sample(V(g),250 )
 induced <- induced_subgraph(g,sampled_nodes)
 E(induced)$color <- "blue"
 plot(induced, vertex.label = NA, layout = layout_with_fr(induced), 
-     vertex.size = 0.7, edge.arrow.size = 0.5)
+     vertex.size = 0.7, edge.arrow.size = 0.5) #Not pretty
+
+#Number of Isolates
+n_iso <- sum(degree(induced) == 0)
+
+# Suppress Isolates from this visualization
+g_plot <- delete_vertices(induced, which(degree(induced) == 0))
+
+set.seed(00)
+lay <- layout_with_fr(g_plot)
+
+viz <- plot(g_plot,
+     layout = lay,
+     vertex.label = NA,
+     vertex.size = 3 + 2 * sqrt(degree(g_plot, mode = "in")),   # size by in-degree (popularity)
+     vertex.color = adjustcolor("darkblue", 0.8),
+     vertex.frame.color = NA,
+     edge.arrow.size = 0.2,
+     edge.arrow.width = 0.8,
+     edge.color = adjustcolor("grey40", 0.5),
+     edge.curved = 0.1, 
+     main = "Induced Subgraph of 250 Randomly Sampled Nodes")
+title(sub = paste(n_iso, "isolated nodes omitted"))
+save(viz, file = "/Users/alexgould/Desktop/STA585GeniusProject/inducedviz.png")
 ```
 
 Descriptive Analysis
 ```{r, echo=TRUE}
 # A. Node Degree Distribution
-hist(degree(g))
-mean(degree(g))
-sd(degree(g))
+hist(degree(g, mode = "in"))
+table(degree(g, mode = "in"))
+hist(degree(g, mode = "out"))
+table(degree(g, mode = "out"))
+mean(degree(g, mode = "in"))
+sd(degree(g, mode = "in"))
+mean(degree(g, mode = "out"))
+sd(degree(g, mode = "out"))
+
 # B. Global and Local Density
 #Global
 edge_density(g)
