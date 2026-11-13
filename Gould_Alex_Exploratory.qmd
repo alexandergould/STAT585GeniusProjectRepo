@@ -132,7 +132,7 @@ plot(g)
 Descriptive Analysis
 ```{r, echo=TRUE}
 # A. Node Degree Distribution
-hist(degree(g))
+hist(degree(g, mode ="out"))
 mean(degree(g))
 sd(degree(g))
 # B. Global and Local Density
