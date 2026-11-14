@@ -19,33 +19,14 @@ library(igraph)
 #head(songinfo)
 # save(datausers_nominal, data_annotate, songinfo, file = "/Users/alexgould/Desktop/STA585GeniusProject/initialfiles.Rdata" )
 
-library(igraph)
-
 # Load in Node data
 load("/Users/alexgould/Desktop/STA585GeniusProject/initialfiles.Rdata")
 
 # Assign Edge Data
 edges_nominal <- read.csv("/Users/alexgould/Desktop/STA585GeniusProject/genius-expertise/follows.csv")
 
-valid_users <- intersect(
-  unique(data_annotate$user[!is.na(data_annotate$user)]),
-  intersect(
-    intersect(unique(datausers_nominal$url_name),
-              unique(edges_nominal$follower)),
-    unique(edges_nominal$following)
-  )
-)
+## ---genre first, computed from ALL annotations of every annotator ----
 
-edges_reduced <- edges_nominal[edges_nominal$follower %in% valid_users &
-                                 edges_nominal$following %in% valid_users,
-                               c("follower", "following")]
-
-valid_nodes    <- datausers_nominal[datausers_nominal$url_name %in% valid_users, ]
-valid_annotate <- data_annotate[data_annotate$user %in% valid_users, ]
-
-## ---- CHANGED: one genre per user from ALL of their annotations ----
-
-# Song-level tag lookup (first listed tag for each song)
 top_tag <- function(x) {
   x <- unlist(x)
   if (length(x) == 0) NA_character_ else x[1]
@@ -57,11 +38,10 @@ song_tags <- data.frame(
 )
 song_tags <- song_tags[!duplicated(song_tags$key), ]
 
-# Tag every annotation of the valid users
-valid_annotate$tag <- song_tags$tag[match(tolower(valid_annotate$song), song_tags$key)]
-mean(is.na(valid_annotate$tag))        # share of annotations with no genre
+annot <- data_annotate[!is.na(data_annotate$user), ]
+annot$tag <- song_tags$tag[match(tolower(annot$song), song_tags$key)]
+mean(is.na(annot$tag))                 # share of annotations with no genre
 
-# Most frequent tag per user, ties broken at random (reproducible)
 mode_tag <- function(x) {
   x <- x[!is.na(x)]
   if (length(x) == 0) return(NA_character_)
@@ -70,87 +50,97 @@ mode_tag <- function(x) {
   if (length(top) == 1) top else sample(top, 1)
 }
 set.seed(585)
-user_tag <- tapply(valid_annotate$tag, valid_annotate$user, mode_tag)
+user_tag  <- tapply(annot$tag, annot$user, mode_tag)
 user_tags <- data.frame(url_name = names(user_tag),
                         tag = as.character(user_tag),
                         stringsAsFactors = FALSE)
+user_tags <- user_tags[!is.na(user_tags$tag), ]   # genre is required to be in the study
 
-# One profile row per user, then attach the tag
-nodes_one     <- valid_nodes[!duplicated(valid_nodes$url_name), ]
-nodes_reduced <- merge(nodes_one, user_tags, by = "url_name", all.x = TRUE)
+## ---- CHANGED: study population ----
+# Annotator with a genre + a profile + observed in the crawl (either column).
+# (Old code required BOTH columns, which excluded users who only follow or are only followed.)
+in_network <- union(edges_nominal$follower, edges_nominal$following)
 
-stopifnot(!anyDuplicated(nodes_reduced$url_name))
-nrow(nodes_reduced)                    # should equal length(valid_users)
-nrow(nodes_reduced) == length(valid_users) #TRUE
-sum(is.na(nodes_reduced$tag))          # users with no usable genre
-sort(table(nodes_reduced$tag), decreasing = TRUE)[1:10]
+study_users <- Reduce(intersect, list(user_tags$url_name,
+                                      datausers_nominal$url_name,
+                                      in_network))
+length(study_users)
+
+# Edges among study users, no self-loops, no duplicate rows
+edges_study <- edges_nominal[edges_nominal$follower  %in% study_users &
+                             edges_nominal$following %in% study_users &
+                             edges_nominal$follower != edges_nominal$following,
+                             c("follower", "following")]
+edges_study <- unique(edges_study)
+
+# Nodes: ALL study users, isolates included
+nodes_one   <- datausers_nominal[!duplicated(datausers_nominal$url_name) &
+                                 datausers_nominal$url_name %in% study_users, ]
+nodes_study <- merge(nodes_one, user_tags, by = "url_name")
+
+stopifnot(!anyDuplicated(nodes_study$url_name),
+          nrow(nodes_study) == length(study_users),
+          all(unlist(edges_study) %in% nodes_study$url_name))
+
+sort(table(nodes_study$tag), decreasing = TRUE)[1:10]
 ## ---------------------------------------------------------------------
 
-# Drop self-loops and duplicate rows
-edges_final <- edges_reduced[edges_reduced$follower != edges_reduced$following, ]
-edges_final <- unique(edges_final)
-
-# Keep only nodes with at least one remaining edge
-keep_ids    <- unique(c(edges_final$follower, edges_final$following))
-nodes_final <- nodes_reduced[nodes_reduced$url_name %in% keep_ids, ]
-
-stopifnot(all(unlist(edges_final) %in% nodes_final$url_name))
-stopifnot(all(nodes_final$url_name %in% keep_ids))
-stopifnot(!anyDuplicated(nodes_final$url_name))
-
 # Split up stats data frame
-nodes_final$annotations    <- nodes_final$stats$Annotations
-nodes_final$suggestions    <- nodes_final$stats$Suggestions
-nodes_final$transcriptions <- nodes_final$stats$Transcriptions
-nodes_final$questions      <- nodes_final$stats$Questions
-nodes_final$answers        <- nodes_final$stats$Answers
-nodes_final$pyongs         <- nodes_final$stats$Pyongs
-nodes_final <- subset(nodes_final, select = -stats)
+nodes_study$annotations    <- nodes_study$stats$Annotations
+nodes_study$suggestions    <- nodes_study$stats$Suggestions
+nodes_study$transcriptions <- nodes_study$stats$Transcriptions
+nodes_study$questions      <- nodes_study$stats$Questions
+nodes_study$answers        <- nodes_study$stats$Answers
+nodes_study$pyongs         <- nodes_study$stats$Pyongs
+nodes_study <- subset(nodes_study, select = -stats)
 
 # Roles to boolean variables
-all_roles <- sort(unique(unlist(nodes_final$roles)))
+all_roles <- sort(unique(unlist(nodes_study$roles)))
 for (r in all_roles) {
   col <- paste0("role_", make.names(r))
-  nodes_final[[col]] <- vapply(nodes_final$roles, function(x) r %in% x, logical(1))
+  nodes_study[[col]] <- vapply(nodes_study$roles, function(x) r %in% x, logical(1))
 }
-nodes_final <- subset(nodes_final, select = -roles)
+nodes_study <- subset(nodes_study, select = -roles)
 
-# Build graph
-g <- graph_from_data_frame(d = edges_final, vertices = nodes_final, directed = TRUE)
+# Full graph for modeling: isolates KEPT
+g <- graph_from_data_frame(d = edges_study, vertices = nodes_study, directed = TRUE)
 
-plot(g, vertex.label = NA, vertex.size = 0.5, edge.arrow.size = 0.2)
-```
-G(n,p) graph visualization 
-```{r, echo=TRUE}
-# Small standalone graph (no copy of the big one)
-sampled_nodes <- sample(V(g),250 )
-induced <- induced_subgraph(g,sampled_nodes)
-E(induced)$color <- "blue"
-plot(induced, vertex.label = NA, layout = layout_with_fr(induced), 
-     vertex.size = 0.7, edge.arrow.size = 0.5) #Not pretty
+c(nodes = vcount(g), edges = ecount(g),
+  isolates = sum(degree(g) == 0), loops = sum(which_loop(g)))
 
-#Number of Isolates
-n_iso <- sum(degree(induced) == 0)
+## ---- CHANGED: plot only the connected part, report the isolates ----
+n_iso  <- sum(degree(g) == 0)
+g_plot <- delete_vertices(g, which(degree(g) == 0))   # g itself is untouched
 
-# Suppress Isolates from this visualization
-g_plot <- delete_vertices(induced, which(degree(induced) == 0))
-
-set.seed(00)
+set.seed(585)
 lay <- layout_with_fr(g_plot)
 
-viz <- plot(g_plot,
+par(mar = c(0, 0, 0, 0))
+plot(g_plot,
      layout = lay,
      vertex.label = NA,
-     vertex.size = 3 + 2 * sqrt(degree(g_plot, mode = "in")),   # size by in-degree (popularity)
+     vertex.size = 1,#2 + 2 * sqrt(degree(g_plot, mode = "in")),
      vertex.color = adjustcolor("darkblue", 0.8),
      vertex.frame.color = NA,
-     edge.arrow.size = 0.2,
-     edge.arrow.width = 0.8,
-     edge.color = adjustcolor("grey40", 0.5),
-     edge.curved = 0.1, 
-     main = "Induced Subgraph of 250 Randomly Sampled Nodes")
-title(sub = paste(n_iso, "isolated nodes omitted"))
-save(viz, file = "/Users/alexgould/Desktop/STA585GeniusProject/inducedviz.png")
+     edge.arrow.size = 0.15,
+     edge.color = adjustcolor("grey40", 0.4))
+title(sub = paste(n_iso, "isolated nodes omitted from this figure"))
+
+```
+
+Enlarge Plot
+```{r network, fig.width=12, fig.height=9, out.width="100%", dpi=150, echo=TRUE}
+par(mar = c(0, 0, 0, 0))
+
+plot(g_plot,
+     layout = lay,
+     vertex.label = NA,
+     vertex.size = degree(g_plot, mode = "in")/60,#2 + 2 * sqrt(degree(g_plot, mode = "in")),
+     vertex.color = adjustcolor("darkblue", 0.8),
+     vertex.frame.color = NA,
+     edge.arrow.size = 0.5,
+     edge.color = adjustcolor("grey40", 0.4))
+title(sub = paste(n_iso, "isolated nodes omitted from this figure"))
 ```
 
 Descriptive Analysis
