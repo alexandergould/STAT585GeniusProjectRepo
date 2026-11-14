@@ -5,3 +5,5 @@ genius-expertise/follows.csv
 genius-expertise/map_artist_names.csv
 initialfiles.Rdata
 .DS_Store
+.Rproj.user/
+.Rhistory

@@ -1,0 +1,509 @@
+---
+title: "Genius Network: Callum EDA"
+author: "Callum Magarian"
+format: html
+editor: visual
+---
+
+## Objectives
+
+This is an Exploratory Data Analysis which will investigate the structure of Genius dataset used in previous Cornell research: *Expertise and Dynamics within Crowdsourced Musical Knowledge Curation: A Case Study of the Genius Platform* by Derek Lim and Austin R. Benson.
+
+## Explaining Data Sources
+
+For the time being, our data is ran locally. This a large collection of data, but it will be computationally sufficient for the time being.
+
+```{r folder inventory}
+# connecting path
+data_dir <- path.expand("~/Downloads/genius-expertise")
+stopifnot(dir.exists(data_dir))
+# providing basic information
+paths <- list.files(data_dir, full.names = TRUE)
+info <- file.info(paths)
+# maintaining directory
+keep <- !is.na(info$isdir) & !info$isdir
+inventory <- data.frame(
+  file = basename(paths[keep]),
+  size_MB = round(info$size[keep] / 1024^2, 2)
+)
+inventory[order(inventory$size_MB, decreasing = TRUE), ]
+```
+
+The csv files themselves are not too large so these will get a simple, brief overview.
+
+```{r showing files and sizes}
+# tracking csv files
+csv_files <- list.files(
+  data_dir,
+  pattern = "\\.csv$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+basename(csv_files)
+# previewing csv
+csv_preview <- data.table::fread(csv_files[1], nrows = 1000)
+# overviewing information
+names(csv_preview)
+str(csv_preview)
+head(csv_preview)
+```
+
+```{r second csv overview}
+# same for second csv
+csv_preview <- data.table::fread(csv_files[2], nrows = 1000)
+names(csv_preview)
+str(csv_preview)
+head(csv_preview)
+```
+
+The csv files in general are quite simple. follows.csv covers users and who they are following. map_artist_names contains the initial musician / band's spelling and then a normalized version using dashes and first letter capitals for consistency (e.g. blackthought -\> Black-thought).
+
+Json overviews should be cautious given these file sizes are larger than the csvs, especially for annotation information.
+
+```{r json differentiation}
+json_files <- list.files(
+  data_dir,
+  pattern = "\\.json$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+
+basename(json_files)
+```
+
+```{r json prefixes}
+# providing 2000 bit prefixes for json files
+peek_json <- function(path, n_bytes = 2000L) {
+  con <- file(path, open = "rb")
+  on.exit(close(con))
+  
+  prefix <- readBin(con, what = "raw", n = n_bytes)
+  
+  cat("\n---", basename(path), "---\n")
+  cat(rawToChar(prefix), "\n")
+}
+
+for (path in json_files) {
+  peek_json(path)
+}
+```
+
+| File | Apparent Structure | Implications |
+|------------------------|------------------------|------------------------|
+| annotation_info.json | Annotation metadata, lit of contribution stats, list of edit objects, long HTML text | Most complicated file, extract select metadata and relationships in batches, avoid retaining text unless necessary |
+| artist_info.json | Artist profiles, "roles" array, extensive "songs" array | Keep song relationships separate from profile fields, verify what an "artist" record represents |
+| song_info.json | Song metadata, "tags" array, annotation is "null" | Useful for song-to-tag relationships, tags include genres and other labels |
+| user_info.json | User level fields, nested stats, "roles" array | Natural starting point for user attributes, observed follower counts are not an edge list |
+
+: There are some limitations given this information:
+
+- song_info includes non-genre tags and so an instance like "Memes" should not be interpreted as such
+
+- artist_info has various fields so the file name itself does not clearly establish the entity it covers (though the original README in genius-expertise does clarify this)
+
+- annotation prefix did not show a song ID; need to inspect the complete record's field names before determining how to connect annotations to songs
+
+## Data Inspection & Preliminary Diagnostics
+
+```{r providing larger, limited preview}
+# confirming format with extended but limited preview
+check_json_prefix <- function(path, max_bytes = 262144L) {
+  con <- file(path, open = "rb")
+  on.exit(close(con))
+  # storing data into variable
+  bytes <- readBin(con, what = "raw", n = max_bytes)
+  # determining newline positions
+  newlines <- which(bytes == as.raw(10))
+  # providing early exit case
+  if (!length(newlines)) {
+    return(data.frame(
+      file = basename(path),
+      complete_lines = 0L,
+      valid_json_lines = NA_integer_
+    ))
+  }
+  # normalizing text for easier parsing
+  end <- tail(newlines, 1)
+  text <- rawToChar(bytes[seq_len(end)])
+  lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
+  lines <- lines[nzchar(trimws(lines))]
+  # valid data check
+  valid <- vapply(lines, jsonlite::validate, logical(1))
+  # providing one row summary table
+  data.frame(
+    file = basename(path),
+    complete_lines = length(lines),
+    valid_json_lines = sum(valid)
+  )
+}
+json_files <- list.files(
+  data_dir,
+  pattern = "\\.json$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+do.call(rbind, lapply(json_files, check_json_prefix))
+```
+
+This table confirms every line check is valid. We can inspect the json specific information from here.
+
+```{r user info breakdown}
+# limiting preview of text file 
+read_record_preview <- function(path, n = 5L) {
+  con <- file(path, open = "rt", encoding = "UTF-8")
+  on.exit(close(con))
+  # convering json to nested r list
+  lines <- readLines(con, n = n, warn = FALSE)
+  lapply(lines, function(line) {
+    jsonlite::fromJSON(line, simplifyVector = FALSE)
+  })
+}
+# storing user info preview
+users_preview <- read_record_preview(
+  file.path(data_dir, "user_info.json")
+)
+# displaying user info preview
+names(users_preview[[1]])
+str(users_preview[[1]], max.level = 2)
+```
+
+Candidate relationships:
+
+- contribution_stats\$name -\> user_info\$url_name
+
+- annotation\$song -\> song_info\$url_name
+
+- song_info\$tags -\> genre-related categories
+
+```{r annotation preview}
+# limiting preview of text file
+annotation_preview <- read_record_preview(
+  file.path(data_dir, "annotation_info.json"),
+  n = 1L
+)
+names(annotation_preview[[1]])
+# inspecting limited contributor structure
+str(
+  annotation_preview[[1]]$contribution_stats,
+  max.level = 2,
+  list.len = 3
+)
+```
+
+```{r}
+# early stopping message
+if (!dir.exists(data_dir)) {
+  stop("Dataset folder not found. Check the data_dir path.")
+}
+
+# reading limited JSON files
+read_records <- function(path, n = 25L) {
+  if (!file.exists(path)) {
+    stop("File not found: ", path)
+  }
+  # opening connection
+  con <- file(path, open = "rt", encoding = "UTF-8")
+  # closing connection
+  on.exit(close(con))
+  # reading requested number of lines
+  lines <- readLines(con, n = n, warn = FALSE)
+  # convering lines into separate r lists
+  lapply(lines, function(line) {
+    jsonlite::fromJSON(line, simplifyVector = FALSE)
+  })
+}
+# reading 25 annotations for testing
+annotations_test <- read_records(
+  file.path(data_dir, "annotation_info.json"),
+  n = 25L
+)
+# inspecting song field
+length(annotations_test)
+str(annotations_test[[1]]$song)
+# inspecting contributor structure
+str(
+  annotations_test[[1]]$contribution_stats,
+  max.level = 2,
+  list.len = 3
+)
+```
+
+This output confirms the test records have an expected structure for its extraction. Now, I will test out contributor to annotation relationships.
+
+```{r defining helpers}
+# returning single values as text
+get_text <- function(x) {
+  if (is.null(x) || length(x) != 1L || !is.atomic(x)) {
+    return(NA_character_)
+  }
+  as.character(x)
+}
+
+# returning single values as numeric
+get_number <- function(x) {
+  if (is.null(x) || length(x) != 1L || !is.atomic(x)) {
+    return(NA_real_)
+  }
+  # otherwise marked as NA
+  suppressWarnings(as.numeric(x))
+}
+```
+
+```{r extracting contributor to annotation relationships}
+# converting single annotation to small table of contributors
+extract_contributors <- function(annotation) {
+  contributors <- annotation$contribution_stats
+  
+  # returning NULL if no listed contributors
+  if (is.null(contributors) || length(contributors) == 0L) {
+    return(NULL)
+  }
+  # creating single row for each listed contributor to an annotation
+  rows <- lapply(contributors, function(person) {
+    data.frame(
+      annotation_url = get_text(annotation$url),
+      song = get_text(annotation$song),
+      user = get_text(person$name),
+      
+      # preserving original contribution value
+      contribution = get_number(person$contribution),
+      stringsAsFactors = FALSE
+    )
+  })
+  
+  # combining contributors for single annotation into a table
+  do.call(rbind, rows)
+}
+# applying extraction across 25 test records
+contributor_song_test <- data.table::rbindlist(
+  lapply(annotations_test, extract_contributors),
+  use.names = TRUE,
+  fill = TRUE
+)
+# checking extracted table results
+head(contributor_song_test)
+str(contributor_song_test)
+```
+
+```{r confirmation for expected columns}
+# confirming expected columns were produced
+expected_columns <- c(
+  "annotation_url", "song", "user", "contribution"
+)
+if (!all(expected_columns %in% names(contributor_song_test))) {
+  stop("No complete extraction table was produced. Inspect the test records.")
+}
+# counting missing values in extracted columns
+colSums(is.na(contributor_song_test))
+# summarzing test
+data.frame(
+  annotations_read = length(annotations_test),
+  contributor_rows = nrow(contributor_song_test),
+  unique_users = length(unique(
+    contributor_song_test$user[!is.na(contributor_song_test$user)]
+  )),
+  unique_songs = length(unique(
+    contributor_song_test$song[!is.na(contributor_song_test$song)]
+  ))
+)
+summary(contributor_song_test$contribution)
+```
+
+This test converted 25 annotation records into a table of 136 contributor to annotation relationships, retaining the annotation ID, song ID, contributor name, and contribution value. After inspecting the extracted structure, it is confirmed that all four columns had no missing values, there are 99 different users and 3 different songs, and contribution values range from 0.45 to 87.14 and a median of 7.8.
+
+Now, we can try to establish that identifiers match across files or even support conclusions for the broader network.
+
+```{r identifier chack}
+# reading json files, keeping only identifiers
+read_ids <- function(path) {
+  ids <- character()
+  con <- file(path, open = "rt", encoding = "UTF-8")
+  on.exit(close(con))
+  # running limited json lines through
+  jsonlite::stream_in(
+    con,
+    pagesize = 500,
+    verbose = FALSE,
+    simplifyVector = FALSE,
+    # processing each batch iteratively
+    handler = function(batch) {
+      batch_ids <- vapply(batch, function(record) {
+        id <- record$url_name
+        if (is.null(id) || length(id) != 1L) {
+          return(NA_character_)
+        }
+        as.character(id)
+      }, character(1))
+      ids <<- c(ids, batch_ids)
+    }
+  )
+  # keeping relevant identifiers
+  unique(ids[!is.na(ids) & nzchar(ids)])
+}
+```
+
+```{r identifier test output}
+# scanning the two reference files
+song_ids <- read_ids(file.path(data_dir, "song_info.json"))
+user_ids <- read_ids(file.path(data_dir, "user_info.json"))
+# checking distinct identifiers
+test_songs <- unique(contributor_song_test$song)
+test_users <- unique(contributor_song_test$user)
+# reporting how many identifiers have exact match
+match_summary <- data.frame(
+  identifier = c("Songs", "Users"),
+  checked = c(length(test_songs), length(test_users)),
+  matched = c(
+    sum(test_songs %in% song_ids),
+    sum(test_users %in% user_ids)
+  )
+)
+match_summary$unmatched <- with(match_summary, checked - matched)
+match_summary
+# showing any unmatched identifiers
+setdiff(test_songs, song_ids)
+setdiff(test_users, user_ids)
+```
+
+```{r match flag }
+# preserving all contributor rows
+contributor_song_test$user_profile_match <-
+  contributor_song_test$user %in% user_ids
+contributor_song_test$song_match <-
+  contributor_song_test$song %in% song_ids
+# summarizing contributors by provile availability
+table(contributor_song_test$user_profile_match)
+```
+
+All 3 distinct song identifiers matched for song metadata. 83/99 contributors matched between attribute files while 16 did not. Of the 136 total contributor to annotation records, 120 matched and again, 16 did not. These unmatched records were retaining and flagged for analytical consideration.
+
+# Analyzing Data & Attributes
+
+I realized above that map_artist_names.csv is interpreting the first row, Black Thought, as the header instead of being the first instance. Otherwise, we can now dissect the information knowing that from a limited sample size that this network has a consistent connection basis.
+
+```{r fixing header issue}
+# reading mapping without header issue
+artist_map <- data.table::fread(
+  file.path(data_dir, "map_artist_names.csv"), header = FALSE,
+  col.names = c("name_original", "name_mapped"), colClasses = "character"
+)
+# confirm this instance has been resolved
+head(artist_map)
+```
+
+```{r imports, normalization}
+# necessary imports
+library(data.table)
+library(igraph)
+# importing complete follower edge list
+follows <- fread(
+  file.path(data_dir, "follows.csv"),
+  select = c("follower", "following"),
+  colClasses = "character"
+)
+# determining untenable endpoints while maintaining normalization
+bad_endpoint <- with(
+  follows, is.na(follower) | is.na(following) |
+    trimws(follower) == "" | trimws(following) == ""
+)
+```
+
+```{r checking for bad endpoints}
+# maintaining usable edges in a separate object
+edges <- follows[!bad_endpoint]
+# repoting issues before error handling
+data.frame(
+  imported_rows = nrow(follows),
+  missing_or_blank_endpoints = sum(bad_endpoint),
+  self_loop_rows = sum(edges$follower == edges$following),
+  duplicate_rows = sum(duplicated(edges))
+)
+```
+
+```{r creating directed network, summary}
+# constructing directed graph
+g_directed <- graph_from_data_frame(
+  edges[, .(follower, following)],
+  directed = TRUE
+)
+# first network summary.
+data.frame(
+  nodes = vcount(g_directed), edges = ecount(g_directed),
+  directed = is_directed(g_directed), simple = is_simple(g_directed)
+)
+```
+
+| Output | Interpretation |
+|------------------------------------|------------------------------------|
+| 1,778,595 imported rows | Recorded follower relationships before cleaning |
+| 0 missing / blank endpoints | Every row has both endpoint identifiers |
+| 1,219 self-loops | Rows where follower and following match |
+| 0 duplicate rows | No repeated follower-following pairs |
+| 780,844 nodes | Distinct identifiers appearing as edge endpoints |
+
+: These are the baseline graph construction results. Also note that directed = TRUE so which suggests that if follower i follows j, that does not inherently mean j follows i, and simple = FALSE so self loops are present throughout the graph.
+
+It seems reasonable to remove self loops given we are specifically looking for relationships between different users and not that same ones. This does impact network characteristics and even some statistics such as density. Self loops are about 0.07% of the edges which may have impacts on lower degree users. All vertices are retained and this is overall a small amount of information discarded.
+
+```{r cleaning directed network}
+# creating graph with relationships between different users
+g_directed_clean <- igraph::simplify(
+  g_directed, remove.multiple = FALSE, remove.loops = TRUE
+)
+# verifying the clean graph size and structure
+data.frame(
+  nodes = igraph::vcount(g_directed_clean),
+  edges = igraph::ecount(g_directed_clean),
+  simple = igraph::is_simple(g_directed_clean)
+)
+```
+
+```{r creating 500 edge sample case for visual}
+# sampling 500 edges
+set.seed(585)
+g_plot <- igraph::subgraph_from_edges(
+  g_directed_clean,
+  eids = sample.int(igraph::ecount(g_directed_clean), 500),
+  delete.vertices = TRUE
+)
+# calculating positions for sampled graph
+lay <- igraph::layout_with_fr(g_plot)
+old_mar <- par("mar")
+par(mar = c(0, 0, 2, 0))
+# plotting graph with various characteristics included
+plot(
+  g_plot,
+  layout = lay,
+  vertex.label = NA,
+  vertex.size = 3 + sqrt(igraph::degree(g_plot, mode = "in")),
+  vertex.color = adjustcolor("darkblue", 0.8),
+  vertex.frame.color = NA,
+  edge.arrow.size = 0.3,
+  edge.width = 0.7,
+  edge.color = adjustcolor("grey40", 0.4),
+  main = "Follower network: 500 sampled edges"
+)
+par(mar = old_mar)
+```
+
+```{r creating baseline for statistics}
+# using cleaned graph for baseline statistics
+g <- g_directed_clean
+# establishing in degree and out degree
+d_in <- igraph::degree(g, mode = "in")
+d_out <- igraph::degree(g, mode = "out")
+```
+
+```{r providing table for different statistics}
+# summarizing various attributes
+baseline <- data.frame(
+  nodes = igraph::vcount(g), edges = igraph::ecount(g),
+  isolates = sum(d_in + d_out == 0), mean_in_degree = mean(d_in),
+  median_in_degree = median(d_in), mean_out_degree = mean(d_out),
+  median_out_degree = median(d_out), density = igraph::edge_density(g, loops = FALSE)
+)
+baseline
+# examining variations
+summary(d_in)
+summary(d_out)
+```
