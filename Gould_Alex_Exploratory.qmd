@@ -119,10 +119,10 @@ par(mar = c(0, 0, 0, 0))
 plot(g_plot,
      layout = lay,
      vertex.label = NA,
-     vertex.size = 1,#2 + 2 * sqrt(degree(g_plot, mode = "in")),
+     vertex.size = degree(g_plot, mode = "in")/60,
      vertex.color = adjustcolor("darkblue", 0.8),
      vertex.frame.color = NA,
-     edge.arrow.size = 0.15,
+     edge.arrow.size = 0.5,
      edge.color = adjustcolor("grey40", 0.4))
 title(sub = paste(n_iso, "isolated nodes omitted from this figure"))
 
@@ -146,9 +146,9 @@ title(sub = paste(n_iso, "isolated nodes omitted from this figure"))
 Descriptive Analysis
 ```{r, echo=TRUE}
 # A. Node Degree Distribution
-hist(degree(g, mode = "in"))
+hist(log(degree(g, mode = "in")))
 table(degree(g, mode = "in"))
-hist(degree(g, mode = "out"))
+hist(log(degree(g, mode = "out")))
 table(degree(g, mode = "out"))
 mean(degree(g, mode = "in"))
 sd(degree(g, mode = "in"))
@@ -158,8 +158,11 @@ sd(degree(g, mode = "out"))
 # B. Global and Local Density
 #Global
 edge_density(g)
-#Local 
-
+#Local (Ego-Network Density)
+ego1 <- induced_subgraph(g, c(1, neighbors(g, 1)))
+egohalf <- induced_subgraph(g, c(round(vcount(g)/2), neighbors(g, round(vcount(g)/2))))
+edge_density(ego1)
+edge_density(egohalf)#Must be an Isolate
 
 #C. Clustering Coefficient
 hist(transitivity(g, type = "local"))
@@ -172,11 +175,24 @@ mean(betweenness(g))
 
 #E : Degree/Nominal Assortativity 
 #Degree Assortativity
-assortativity_degree(g)
+assortativity_degree(g, directed = TRUE)
 #Nominal Assortativity 
+assortativity_nominal(g,types = as.numeric(factor(V(g)$tag)), directed = TRUE)
 
 
 #F: Graph Partinitioning 
 #cluster_fast_greedy(g)
 #Only works on undirected graphs 
+#Havent learned a community detection approach for directed so heres one from Claude: 
+g_core <- delete_vertices(g, which(degree(g) == 0))   # isolates would each become their own module
+
+set.seed(585)
+im <- cluster_infomap(g_core, nb.trials = 10)
+
+length(im); sort(sizes(im), decreasing = TRUE)[1:10]
+modularity(g_core, membership(im), directed = TRUE)   # directed modularity
+
+# does the partition line up with genre?
+compare(membership(im), as.integer(factor(V(g_core)$tag)), method = "nmi")
+
 ```
